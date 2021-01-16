@@ -1,2 +1,2 @@
 # STM32F103-Microphone-Audio-Sampling
-Microphone Audio sampling with single ADC channel. The sampled data is stored on SD Card via SPI. 
+Microphone Audio sampling with single ADC channel performed in dual conversion mode using ADC1 and ADC2 peripheral registers. The conversion result is stored into DMA buffer via DMA transfer which triggered by timer 3 update event.  The sampled data is then sent to SD Card via SPI. This is a simple modification of Stevstrong's repository (https://github.com/stevstrong/Audio-sample) to better suit the generic STM32F103 for the purpose of sampling an audio signal from MAX4466 Microphone Audio Sensor. 
