@@ -403,7 +403,7 @@ uint8_t csdDmp() {
 /*****************************************************************************/
 void SD_Info(void)
 {
-	SPI.setModule(2); // remove for the new SD Fat beta
+	SPI.setModule(1); // remove for the new SD Fat beta
 
 	uint32_t t = millis();
 	cout << ("initializing the SD card...");
