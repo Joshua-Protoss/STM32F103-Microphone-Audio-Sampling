@@ -9,7 +9,7 @@
 #include <SdFat.h>
 
 //SD card chip select pin
-#define CHIP_SELECT PB12
+#define CHIP_SELECT PA4
 #define FILE_NAME     ("RawWrite.txt")
 #define LED_Pin       PC13
 
