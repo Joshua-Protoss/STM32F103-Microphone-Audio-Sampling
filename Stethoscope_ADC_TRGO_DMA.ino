@@ -48,7 +48,7 @@ uint32_t sampling_frequency = 44100;  // in Hz
 
 // Some definitions of data blocks later needed to implement time based recording
 #define ADC_BUFFER_SIZE       32
-#define SAMPLES_PER_BUFFER    (32*100)
+#define SAMPLES_PER_BUFFER    32
 //The main buffer to store ADC sample values
 uint16_t adc_buffer[ADC_BUFFER_SIZE];
 
