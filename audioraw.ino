@@ -427,3 +427,5 @@ void SendData(){
 
   
 }
+
+//Better to use One Buffer and utilize DMA interrupt for half and complete transfer.
