@@ -1,0 +1,231 @@
+/*
+	=================================================================================
+	Wave recorder with ADC and DMA triggered by TIM 3 TRG0
+	=================================================================================
+  Each conversion sequence is started by timer 3 update event (up-counting mode).
+  The result of each sample (16bits) is stored into the ADC buffer via DMA transfer.
+  The recording time and sampling frequency is configurable.
+	---------------------------------------------------------------------------------
+*/
+
+#include <libmaple/adc.h>
+#include <libmaple/dma.h>
+#include <SPI.h>
+#include <SdFat.h>
+#include "wav_header.h"
+
+// SdFat and File Class declaration
+SdFat sd;
+File myFile;
+
+WavHeader_t wh;
+
+#define error(s) sd.errorHalt(F(s))
+#define sdErrorMsg(msg) sd.errorPrint(F(msg));
+
+/********************************************************************/
+// Configuration
+/********************************************************************/
+
+// setup recording parameters
+uint16_t max_recording_time = 1000;     // in milliseconds
+uint16_t rate_kb_per_sec    = 66;       // in kB/sec
+uint32_t sampling_frequency = 44100;    // in Hz
+
+
+//recording parameters WAV version
+const int    SAMPLE_CHANNELS           = 1;   // 1.. mono
+const size_t SAMPLE_FREQ               = 16000; // Hz
+const size_t SAMPLES_IN_BUFFER         = 1024;
+const uint32_t MAX_RECORDING_LENGTH_MS = 30000; // milliseconds
+
+// SD Card related definition and LED_PIN
+#define CHIP_SELECT   PB12
+#define FILE_NAME     ("RawWrite.txt")
+#define LED_PIN       PC13
+#define BLOCK_SIZE    512UL
+#define BLOCK_COUNT   200 // (rate_kb_per_sec * max_recording_time)
+
+
+// Buffer size and Samples definitions
+#define ADC_BUFFER_SIZE     256
+#define SAMPLES_PER_BUFFER  256
+int16_t *bufferReady        =   0;
+int16_t buffer0[SAMPLES_IN_BUFFER];
+int16_t buffer1[SAMPLES_IN_BUFFER];
+
+//uint16_t adc_buffer[ADC_BUFFER_SIZE];
+
+int fileCount       =    0;
+uint32_t recordingStart;
+enum State { STATE_WAITING, STATE_CONNECT, STATE_RUNNING, STATE_FINISH };
+State state = STATE_WAITING;
+
+// Configurable timing related constants : adjusted to run TIMER3 at 44100 Hz
+#define TIMER_PRESCALER     4
+#define TIMER_FREQUENCY     (72000000/TIMER_PRESCALER)
+uint32_t timer_reload_value = (TIMER_FREQUENCY/sampling_frequency)-1; // For ARR Register
+
+// Setup analog input pin for ADC Channel
+#define ADC_IN0 PA0
+/********************************************************************/
+
+/********************************************************************/
+// TIMER, ADC, AND DMA Configuration Functions
+/********************************************************************/
+// Configure all modules
+void configure_Modules(void){
+  configure_TIMER();
+  configure_DMA();
+  configure_ADC();
+}
+
+//Timer Configuration
+void configure_TIMER(void){
+  timer_init(TIMER3);
+  // set timer 3 in up-counter mode with auto-reload.
+  // as this mode is not supported by the core lib, we have to set up the registers manually.
+  (TIMER3->regs).adv->CR1 = 0;
+  (TIMER3->regs).adv->CR2 = ( TIMER_CR2_MMS_UPDATE );
+  (TIMER3->regs).adv->SMCR = 0;
+  (TIMER3->regs).adv->DIER = 0;
+  (TIMER3->regs).adv->SR = 0;
+  (TIMER3->regs).adv->EGR = 0;      // bit TIMER_EGR_UG can be set to generate event by SW !
+  (TIMER3->regs).adv->CCMR1 = 0;
+  (TIMER3->regs).adv->CCMR2 = 0;
+  (TIMER3->regs).adv->CCER = 0;
+  (TIMER3->regs).adv->CNT = 0;  // set it only in down-counting more
+  (TIMER3->regs).adv->PSC = TIMER_PRESCALER-1;      // since PSC value is 4 so the TIMER3 frequency becomes 72 MHz / 4 = 18 MHz
+  (TIMER3->regs).adv->ARR = timer_reload_value;     // Hence the clock will be ticking frequency : 18 MHz / ARR = 18000000/(timer_reload_value) = 44100 Hz
+  (TIMER3->regs).adv->CCR1 = 0;
+  (TIMER3->regs).adv->CCR2 = 0;
+  (TIMER3->regs).adv->CCR3 = 0;
+  (TIMER3->regs).adv->CCR4 = 0;
+  (TIMER3->regs).adv->DCR = 0;      // don't use DMA
+  (TIMER3->regs).adv->DMAR = 0;
+  // don't forget to set the ADC trigger source to TIMER3->TRG0. Do it before enabling the ADC !!!
+  
+}
+
+
+void configure_DMA(void){
+
+  
+}
+
+void DMA_Rx_irq(void){
+  
+}
+
+// ADC Configuration
+void configure_ADC(void){
+  Serial.print("Configuring ADC Setup...");
+
+  adc_set_prescaler(ADC_PRE_PCLK2_DIV_2);
+  adc_init(ADC1); // rcc_clk_enable(ADC1->clk_id, optional
+  adc_set_sample_rate(ADC1, ADC_SMPR_7_5); // up to ADC_SMPR_1_5
+
+  uint32_t cr2 = ( ADC_CR2_EXTTRIG | ADC_EXT_EV_TIM3_TRGO | ADC_CR2_DMA | ADC_CR2_TSVREFE ); // ADC_CR2_TSEREFE for test only
+  ADC1->regs->SQR3 = 0;     // Select Channel 0 at SQR3 register
+  // ADC1->regs->CR1 = ( ADC_CR1_SCAN ); // b0110: regular simultaneous mode only, enable SCAN
+
+  Serial.println("done.");
+}
+
+/********************************************************************/
+
+/********************************************************************/
+// ADCDMA class
+/********************************************************************/
+class ADCDMA{
+  public:
+      ADCDMA(int pin, uint16_t *buf, size_t bufSize);
+      virtual ~ADCDMA();
+      void start(size_t freqHZ);
+      void stop();
+  private:
+      int pin;
+      uint16_t *buf;
+      size_t bufSize;
+  
+};
+ADCDMA::ADCDMA(int pin, uint16_t *buf, size_t bufSize) : pin(pin), buf(buf), bufSize(bufSize){
+  
+}
+ADCDMA::~ADCDMA(){
+  
+}
+
+void ADCDMA::start(size_t freqHz){
+  
+}
+/********************************************************************/
+/********************************************************************/
+// SD Card Initialization Functions
+/********************************************************************/
+
+void setup() {
+  pinMode(LED_PIN, OUTPUT);
+}
+
+void loop(){
+
+  switch(state) {
+    case STATE_WAITING:
+      // Waiting for the user to start.
+      // the start function will bump the state into STATE_CONNECT
+      break;
+
+    case STATE_CONNECT:
+    {
+      char fileName[128];
+      snprintf(fileName, sizeof(fileName), "rec%04d.wav", fileCount+1);
+      if (myFile.open(fileName, O_RDWR | O_CREAT | O_TRUNC)){
+        strcpy(wh.riff_header, "RIFF");
+        strcpy(wh.wave_header, "WAVE");
+        strcpy(wh.fmt_header,  "fmt");
+        strcpy(wh.data_header, "data");
+        wh.fmt_chunk_size   = 16;
+        wh.audio_format     = 1;
+        wh.num_channels     = SAMPLE_CHANNELS;
+        wh.bit_depth        = 16;
+        wh.sample_rate      = sampling_frequency;
+        wh.sample_alignment = wh.num_channels * wh.bit_depth / 8;
+        wh.byte_rate        = wh.sample_rate * wh.sample_alignment;
+        wh.data_bytes       = 0;
+        wh.wav_size         = sizeof(wh)-8;
+        if (myFile.write((uint8_t *)&wh, sizeof(wh)) < sizeof(wh)){
+          //Log.warn("error writing WAV header");
+          Serial.print("error writing WAV header");
+          myFile.close();
+          state = STATE_WAITING;
+          return;
+        }
+        fileCount++;
+        //digitalWrite(LED_PIN, HIGH);
+        Serial.print("Writing to file...");
+        //Log.info("writing to %s", fileName);
+        //recordingStart = millis();
+       // adc.start();
+        //state = STATE_RUNNING;
+        
+      }
+      else {
+        //Log.warn("opening %s for write failed", fileName);
+        Serial.print("Failed to open file...");
+        state = STATE_WAITING;
+      }
+    }
+    break;
+
+    case STATE_RUNNING:
+      if (bufferReady) {
+        int16_t *samples = (int16_t*)bufferReady;
+        bufferReady = 0;
+        for (int i = 0; i < SAMPLES_IN_BUFFER; i++){
+          samples[i] -= 2048; // transpose 0 .. +4095 to -2048 .. +2047
+          samples[i] <<= 4;   // 12 bit -> 16 bit
+        }
+      }
+  }
+}
